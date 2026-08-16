@@ -1,5 +1,7 @@
 import pandas as pd
-
+import glob
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
 
 #file_path_1 = "/Users/aidanpenfold/Desktop/Honours/Methods/aramex/Data/csv_files/95.csv"
 #file_path_2 = "/Users/aidanpenfold/Desktop/Honours/Methods/aramex/Data/csv_files/USDZAR.csv"
@@ -74,6 +76,68 @@ def import_USD_ZAR(file_path):
     df = df.sort_values("Date", ascending=False).reset_index(drop=True)
 
     return df
+
+
+
+def load_jodi_production(data_dir="../data/indpro", pattern="*.csv",
+                          countries=None, product="CRUDEOIL",
+                          flow="INDPROD", unit="KBD", total_only=True):
+    """
+    Reads and compiles JODI-Oil yearly CSV files (one file per year) into a
+    single clean monthly production dataframe.
+
+    Parameters
+    ----------
+    data_dir  : folder containing the yearly JODI csv files
+    pattern   : glob pattern matching the yearly files, e.g. '2011.csv'
+    countries : optional list of REF_AREA codes to include (e.g. ["ZA", "US"])
+                if None, includes all reporting countries
+    product   : ENERGY_PRODUCT to filter to (default 'CRUDEOIL')
+    flow      : FLOW_BREAKDOWN to filter to (default 'INDPROD' = indigenous production)
+    unit      : UNIT_MEASURE to filter to (default 'KBD' = thousand barrels/day)
+    total_only: if True (default), returns a single 'Total_Production' column
+                summed across countries; if False, returns one column per country
+
+    Returns
+    -------
+    DataFrame indexed by Date (month start).
+    """
+
+    files = sorted(glob.glob(f"{data_dir}/{pattern}"))
+    if not files:
+        raise FileNotFoundError(f"No files matched {pattern} in {data_dir}")
+
+    frames = []
+    for f in files:
+        df = pd.read_csv(f)
+        df.columns = [c.strip().upper() for c in df.columns]
+
+        mask = (
+            (df["ENERGY_PRODUCT"] == product) &
+            (df["FLOW_BREAKDOWN"] == flow) &
+            (df["UNIT_MEASURE"] == unit)
+        )
+        df = df[mask].copy()
+
+        if countries is not None:
+            df = df[df["REF_AREA"].isin(countries)]
+
+        df["OBS_VALUE"] = pd.to_numeric(df["OBS_VALUE"], errors="coerce")
+        df["Date"] = pd.to_datetime(df["TIME_PERIOD"], format="%Y-%m")
+
+        frames.append(df[["Date", "REF_AREA", "OBS_VALUE"]])
+
+    combined = pd.concat(frames, ignore_index=True)
+    combined = combined.drop_duplicates(subset=["Date", "REF_AREA"])
+
+    if total_only:
+        total = combined.groupby("Date")["OBS_VALUE"].sum(min_count=1)
+        result = total.to_frame("Total_Production").sort_index()
+    else:
+        result = combined.pivot(index="Date", columns="REF_AREA", values="OBS_VALUE")
+        result = result.sort_index()
+
+    return result
 
 
 def import_brentcrude(file_path):
@@ -514,6 +578,65 @@ def add_usdzar_delta_features(master_df):
 
     return master_df
 
+# Functions for understanding features
+def print_feature_dist(df):
+    with PdfPages('histograms_of_features.pdf') as pdf:
+        # Generate histograms for continuous features
+        for col in df:
+            plt.figure(figsize=(8, 5))
+            series = pd.to_numeric(df[col], errors='coerce')
+            plt.hist(series.dropna(), bins=20, color='blue', alpha=0.7)
+            plt.title(f'Histogram of {col}')
+            plt.xlabel(col)
+            plt.ylabel('Frequency')
+            plt.grid(axis='y', linestyle='--', alpha=0.7)
+            pdf.savefig()
+            plt.close()
+
+def print_feature_vs_y_line_graphs(df):
+    """
+    Plots each feature in the dataframe compared to 'y', normalizing both to start at the same value.
+    Saves the plots as a PDF.
+
+    Parameters:
+    df (pd.DataFrame): DataFrame containing features and a column labeled 'y'.
+
+    Raises:
+    ValueError: If 'y' is not in the dataframe.
+    """
+    with PdfPages('line_graphs_features_vs_y.pdf') as pdf:
+        # Ensure 'y' exists in the dataframe
+        if 'y' not in df.columns:
+            raise ValueError("The dataframe must contain a 'y' column for comparison.")
+
+        # Normalize 'y' to start at the same value as each feature
+        y_series = pd.to_numeric(df['y'], errors='coerce')
+        y_start = y_series.iloc[0]
+
+        # Generate line graphs for each feature compared to 'y'
+        for col in df:
+            if col == 'y':  # Skip 'y' itself
+                continue
+
+            plt.figure(figsize=(10, 6))
+            series = pd.to_numeric(df[col], errors='coerce')
+            feature_start = series.iloc[0]
+
+            # Normalize both series to start at the same value
+            normalized_feature = series / feature_start if feature_start != 0 else series
+            normalized_y = y_series / y_start if y_start != 0 else y_series
+
+            plt.plot(normalized_feature.index, normalized_feature, label=col, color='blue', alpha=0.7)
+            plt.plot(normalized_y.index, normalized_y, label='y', color='red', linestyle='--', alpha=0.7)
+
+            plt.title(f'{col} vs y (Normalized)')
+            plt.xlabel('Index')
+            plt.ylabel('Normalized Value')
+            plt.legend()
+            plt.grid(axis='both', linestyle='--', alpha=0.7)
+            pdf.savefig()
+            plt.close()
+
 def load_petrol():
     petrol_breakdown_df, master_petrol_df = import_breakdown("../data/95.csv")
     USD_ZAR_df = import_USD_ZAR("../data/USDZAR.csv")
@@ -545,6 +668,12 @@ def load_petrol():
     master_petrol_df = add_gecon_lags(master_petrol_df)
     master_petrol_df = add_indpro_lags(master_petrol_df)
     
+    total_production = load_jodi_production()
+    total_production_reset = total_production.reset_index()  # columns: Date, Total_Production
+
+    # Merge explicitly on the Date column
+    master_petrol_df = pd.merge(master_petrol_df, total_production_reset, on="Date", how="outer")
+
     master_petrol_df = master_petrol_df.sort_values("Date", ascending=True).reset_index(drop=True)
 
     return master_petrol_df
@@ -580,6 +709,12 @@ def load_diesel():
     master_diesel_df = add_gecon_lags(master_diesel_df)
     master_diesel_df = add_indpro_lags(master_diesel_df)
     
+    total_production = load_jodi_production()
+    total_production_reset = total_production.reset_index()  # columns: Date, Total_Production
+
+    # Merge explicitly on the Date column
+    master_diesel_df = pd.merge(master_diesel_df, total_production_reset, on="Date", how="outer")
+
     master_diesel_df = master_diesel_df.sort_values("Date", ascending=True).reset_index(drop=True)
 
     return master_diesel_df
