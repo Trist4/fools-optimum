@@ -271,154 +271,113 @@ def add_gscpi_feature(master_df, gscpi_df):
 
 
 def add_usd_features(petrol_breakdown_df, USD_ZAR_df):
-
     usd = USD_ZAR_df.copy()
-
     usd = usd.sort_values("Date")
 
-    # Rolling features (past information only)
-    usd["USDZAR_Mean"] = (
-        usd["USD_ZAR"]
-        .rolling(window=30, min_periods=1)
-        .mean()
-    )
+    usd["USDZAR_Mean"] = usd["USD_ZAR"].rolling(window=30, min_periods=1).mean()
+    usd["USDZAR_Std"] = usd["USD_ZAR"].rolling(window=30, min_periods=2).std()
+    usd["USDZAR_LastWeekMean"] = usd["USD_ZAR"].rolling(window=7, min_periods=1).mean()
 
-    usd["USDZAR_Std"] = (
-        usd["USD_ZAR"]
-        .rolling(window=30, min_periods=2)
-        .std()
-    )
-
-    usd["USDZAR_LastWeekMean"] = (
-        usd["USD_ZAR"]
-        .rolling(window=7, min_periods=1)
-        .mean()
-    )
-
-    # Take the LAST available trading day of each month
     monthly_usd = (
-        usd
-        .groupby(usd["Date"].dt.to_period("M"))
-        .last()
-        .reset_index(drop=True)
+        usd.groupby(usd["Date"].dt.to_period("M")).last().reset_index(drop=True)
     )
+    monthly_usd["Date"] = monthly_usd["Date"].dt.to_period("M").dt.to_timestamp()
 
-    # Convert to first day of month so merge still works
-    monthly_usd["Date"] = (
-        monthly_usd["Date"]
-        .dt.to_period("M")
-        .dt.to_timestamp()
-    )
+    monthly_usd = monthly_usd[["Date", "USDZAR_Mean", "USDZAR_Std", "USDZAR_LastWeekMean"]]
+    monthly_usd = monthly_usd.sort_values("Date")
 
-    monthly_usd = monthly_usd[
-        [
-            "Date",
-            "USDZAR_Mean",
-            "USDZAR_Std",
-            "USDZAR_LastWeekMean"
-        ]
-    ]
+    # SHIFT: the values kept above are computed using data through the END of
+    # each month, so they aren't actually known until that month has fully
+    # closed. Shifting by 1 aligns them onto the FOLLOWING month's row, so a
+    # row for month i only ever carries information genuinely available by
+    # the start of month i.
+    for col in ["USDZAR_Mean", "USDZAR_Std", "USDZAR_LastWeekMean"]:
+        monthly_usd[col] = monthly_usd[col].shift(1)
 
-    master_df = petrol_breakdown_df.merge(
-        monthly_usd,
-        on="Date",
-        how="left"
-    )
-
+    master_df = petrol_breakdown_df.merge(monthly_usd, on="Date", how="left")
     return master_df
 
 
 def add_brent_features(master_df, brent_df):
-
     brent = brent_df.copy()
-
     brent = brent.sort_values("Date")
 
-    # Rolling features (past information only)
-    brent["Brent_MonthMean"] = (
-        brent["Brent_Crude"]
-        .rolling(window=30, min_periods=1)
-        .mean()
-    )
+    brent["Brent_MonthMean"] = brent["Brent_Crude"].rolling(window=30, min_periods=1).mean()
+    brent["Brent_MonthStd"] = brent["Brent_Crude"].rolling(window=30, min_periods=2).std()
+    brent["Brent_LastWeekMean"] = brent["Brent_Crude"].rolling(window=7, min_periods=1).mean()
+    brent["Brent_LastWeekStd"] = brent["Brent_Crude"].rolling(window=7, min_periods=2).std()
 
-    brent["Brent_MonthStd"] = (
-        brent["Brent_Crude"]
-        .rolling(window=30, min_periods=2)
-        .std()
-    )
-
-    brent["Brent_LastWeekMean"] = (
-        brent["Brent_Crude"]
-        .rolling(window=7, min_periods=1)
-        .mean()
-    )
-
-    brent["Brent_LastWeekStd"] = (
-        brent["Brent_Crude"]
-        .rolling(window=7, min_periods=2)
-        .std()
-    )
-
-    # Keep only the final trading day of each month
     monthly_brent = (
-        brent
-        .groupby(brent["Date"].dt.to_period("M"))
-        .last()
-        .reset_index(drop=True)
+        brent.groupby(brent["Date"].dt.to_period("M")).last().reset_index(drop=True)
     )
-
-    monthly_brent["Date"] = (
-        monthly_brent["Date"]
-        .dt.to_period("M")
-        .dt.to_timestamp()
-    )
+    monthly_brent["Date"] = monthly_brent["Date"].dt.to_period("M").dt.to_timestamp()
 
     monthly_brent = monthly_brent[
-        [
-            "Date",
-            "Brent_MonthMean",
-            "Brent_MonthStd",
-            "Brent_LastWeekMean",
-            "Brent_LastWeekStd"
-        ]
+        ["Date", "Brent_MonthMean", "Brent_MonthStd", "Brent_LastWeekMean", "Brent_LastWeekStd"]
     ]
+    monthly_brent = monthly_brent.sort_values("Date")
 
-    master_df = master_df.merge(
-        monthly_brent,
-        on="Date",
-        how="left"
-    )
+    # Same fix as USD/ZAR — these are end-of-month snapshots, shift onto the
+    # following month's row so they only ever represent already-elapsed data.
+    for col in ["Brent_MonthMean", "Brent_MonthStd", "Brent_LastWeekMean", "Brent_LastWeekStd"]:
+        monthly_brent[col] = monthly_brent[col].shift(1)
 
+    master_df = master_df.merge(monthly_brent, on="Date", how="left")
+    return master_df
+
+
+def add_gpr_feature(master_df, gpr_df):
+    master_df = master_df.copy()
+    master_df["Date"] = pd.to_datetime(master_df["Date"])
+    gpr_df["Date"] = pd.to_datetime(gpr_df["Date"], format="%m/%d/%y")
+
+    gpr_df = gpr_df.sort_values("Date").copy()
+    # Conservative publication-delay shift: treat GPR as not available until
+    # the following month.
+    gpr_df["GPR"] = gpr_df["GPR"].shift(1)
+
+    master_df = master_df.merge(gpr_df, on="Date", how="left")
+    return master_df
+
+
+def add_gscpi_feature(master_df, gscpi_df):
+    master_df = master_df.copy()
+    master_df["Date"] = pd.to_datetime(master_df["Date"])
+    gscpi_df["Date"] = pd.to_datetime(gscpi_df["Date"], format="%d-%b-%Y")
+    gscpi_df["Date"] = gscpi_df["Date"].dt.to_period("M").dt.to_timestamp()
+
+    gscpi_df = gscpi_df.sort_values("Date").copy()
+    # GSCPI is published mid-month for the PRIOR reference month — shift to
+    # keep it strictly out of the reference month's own row.
+    gscpi_df["GSCPI"] = gscpi_df["GSCPI"].shift(1)
+
+    master_df = master_df.merge(gscpi_df[["Date", "GSCPI"]], on="Date", how="left")
     return master_df
 
 
 def add_gecon_feature(master_df, gecon_df):
-
     master_df = master_df.copy()
-
     master_df["Date"] = pd.to_datetime(master_df["Date"])
 
-    master_df = master_df.merge(
-        gecon_df,
-        on="Date",
-        how="left"
-    )
+    gecon_df = gecon_df.sort_values("Date").copy()
+    # GECON (Baumeister et al.) is also released with a reporting delay —
+    # shift onto the following month for the same reason as above.
+    gecon_df["GECON"] = gecon_df["GECON"].shift(1)
 
+    master_df = master_df.merge(gecon_df, on="Date", how="left")
     return master_df
 
 
 def add_indpro_feature(master_df, indpro_df):
-
     master_df = master_df.copy()
-
     master_df["Date"] = pd.to_datetime(master_df["Date"])
 
-    master_df = master_df.merge(
-        indpro_df,
-        on="Date",
-        how="left"
-    )
+    indpro_df = indpro_df.sort_values("Date").copy()
+    # INDPRO (Fed industrial production index) is typically released several
+    # weeks after the reference month closes — shift for the same reason.
+    indpro_df["INDPRO"] = indpro_df["INDPRO"].shift(1)
 
+    master_df = master_df.merge(indpro_df, on="Date", how="left")
     return master_df
 
 
@@ -578,6 +537,43 @@ def add_usdzar_delta_features(master_df):
 
     return master_df
 
+def add_delta_features(master_df, cols, lags=(1, 2, 3), drop_current=True):
+    """
+    Adds month-to-month delta (first-difference) features for each column in
+    `cols`, plus lagged versions of that delta.
+
+    Parameters
+    ----------
+    master_df    : the dataframe to add features to
+    cols         : list of column names to compute deltas for
+                   (e.g. ["Brent_MonthMean", "GECON", "INDPRO", "Total_Production"])
+    lags         : which lags of the delta to create (default 1, 2, 3)
+    drop_current : if True (default), drops the CURRENT month's raw delta
+                   after creating lags — prevents leakage, same convention
+                   as add_bfp_delta_features/add_usdzar_delta_features
+
+    Returns
+    -------
+    master_df with new columns: {col}_Delta_Lag{n} for each col, n in lags
+    """
+    master_df = master_df.sort_values("Date").copy()
+
+    for col in cols:
+        if col not in master_df.columns:
+            print(f"Skipping '{col}' — not found in dataframe.")
+            continue
+
+        delta_col = f"{col}_Delta"
+        master_df[delta_col] = master_df[col].diff()
+
+        for lag in lags:
+            master_df[f"{col}_Delta_Lag{lag}"] = master_df[delta_col].shift(lag)
+
+        if drop_current:
+            master_df = master_df.drop(columns=[delta_col])
+
+    return master_df
+
 # Functions for understanding features
 def print_feature_dist(df):
     with PdfPages('histograms_of_features.pdf') as pdf:
@@ -637,26 +633,68 @@ def print_feature_vs_y_line_graphs(df):
             pdf.savefig()
             plt.close()
 
+
 def load_petrol():
+    """
+    Assembles the master monthly dataframe for 95 octane petrol by merging
+    the price breakdown with all external feature sources (FX, Brent crude,
+    GPR, GSCPI, GECON, INDPRO, JODI production).
+
+    DATE CONVENTION
+    ----------------
+    Every row is indexed by `Date`, normalized to the FIRST DAY of a calendar
+    month (e.g. 2024-03-01 represents March 2024). All source series — daily
+    (USD/ZAR, Brent), weekly/irregular (GPR, GSCPI), or monthly (BFP, GECON,
+    INDPRO, JODI production) — are aggregated or aligned onto this same
+    first-of-month timestamp before merging, so every column in the final
+    dataframe lines up on a common monthly index.
+
+    WHAT A ROW'S VALUES ACTUALLY REPRESENT
+    ----------------------------------------
+    Because of the publication-delay fix applied in the individual
+    add_*_feature() functions, most columns in a given row do NOT represent
+    that same calendar month's own value — they represent the most recent
+    value that would have genuinely been available/published by the START
+    of that month:
+      - USDZAR_*, Brent_* : shifted by 1 month, since these are computed
+        from data through the END of the prior month (they can't be known
+        until that month has closed).
+      - GECON, INDPRO, GSCPI, GPR, Total_Production : shifted by 1 month,
+        since these external indices/datasets are released with a real
+        reporting delay after their reference month.
+      - BFP : NOT shifted — South Africa's Basic Fuel Price for a given
+        month is calculated and published in advance (per the brief, ~1
+        week before the first Wednesday of that month), so it genuinely
+        IS known ahead of time and is treated as contemporaneous.
+
+    This means: for any row at Date = t, most feature columns reflect
+    information from month t-1, not month t — this is deliberate, and is
+    what keeps the model's inputs realistic (no look-ahead) when later used
+    to forecast Total_Fuel_Price at some horizon beyond t. Downstream
+    add_*_lags() functions build FURTHER lags on top of this already-shifted
+    base — so a column named e.g. USDZAR_Mean_Lag1 reflects information from
+    roughly 2 months prior to Date, not 1 (the "Lag1" naming refers to the
+    additional shift applied by that function, not the total real-world age
+    of the data).
+
+    Returns
+    -------
+    DataFrame, one row per month, sorted ascending by Date.
+    """
     petrol_breakdown_df, master_petrol_df = import_breakdown("../data/95.csv")
     USD_ZAR_df = import_USD_ZAR("../data/USDZAR.csv")
     brent_crude_df = import_brentcrude("../data/DCOILBRENTEU.csv")
     GPR_df = import_gpr("../data/GPR.csv")
     GSCPI_df = import_gscpi("../data/GSCPI.csv")
     gecon_df = import_gecon("../data/GECON.csv")
-    indpro_df = import_indpro("../data/INDPRO.csv")
-    
-    
+    indpro_df = import_indpro("../data/INDPRO.csv") 
     
     master_petrol_df = add_usd_features(master_petrol_df, USD_ZAR_df)
     master_petrol_df = add_brent_features(master_petrol_df, brent_crude_df)
-    
     master_petrol_df = add_gpr_feature(master_petrol_df, GPR_df)
     master_petrol_df = add_gscpi_feature(master_petrol_df, GSCPI_df)
     master_petrol_df = add_gecon_feature(master_petrol_df, gecon_df)
     master_petrol_df = add_indpro_feature(master_petrol_df, indpro_df)
-    
-        
     
     master_petrol_df = add_gpr_lags(master_petrol_df)
     master_petrol_df = add_bfp_lags(master_petrol_df)
@@ -669,8 +707,22 @@ def load_petrol():
     master_petrol_df = add_indpro_lags(master_petrol_df)
     
     total_production = load_jodi_production()
-    total_production_reset = total_production.reset_index()  # columns: Date, Total_Production
+    total_production_reset = total_production.reset_index().sort_values("Date")
 
+    # JODI reference-month data isn't available until ~20 days into the FOLLOWING
+    # month at the earliest (per JODI's own publication schedule), and some
+    # countries report even later (M-2 basis) — shift by 1 to keep this
+    # conservative and consistent with the other macro series fixes.
+    total_production_reset["Total_Production"] = total_production_reset["Total_Production"].shift(1)
+
+    master_petrol_df = pd.merge(master_petrol_df, total_production_reset, on="Date", how="outer")
+
+    # NEW — extend delta coverage to Brent, macro indices, and JODI production
+    master_petrol_df = add_delta_features(
+        master_petrol_df,
+        cols=["Total_Production"],
+        lags=(1, 2, 3)
+    )
     # Merge explicitly on the Date column
     master_petrol_df = pd.merge(master_petrol_df, total_production_reset, on="Date", how="outer")
 
@@ -679,6 +731,52 @@ def load_petrol():
     return master_petrol_df
 
 def load_diesel():
+    """
+    Assembles the master monthly dataframe for 50ppm by merging
+    the price breakdown with all external feature sources (FX, Brent crude,
+    GPR, GSCPI, GECON, INDPRO, JODI production).
+
+    DATE CONVENTION
+    ----------------
+    Every row is indexed by `Date`, normalized to the FIRST DAY of a calendar
+    month (e.g. 2024-03-01 represents March 2024). All source series — daily
+    (USD/ZAR, Brent), weekly/irregular (GPR, GSCPI), or monthly (BFP, GECON,
+    INDPRO, JODI production) — are aggregated or aligned onto this same
+    first-of-month timestamp before merging, so every column in the final
+    dataframe lines up on a common monthly index.
+
+    WHAT A ROW'S VALUES ACTUALLY REPRESENT
+    ----------------------------------------
+    Because of the publication-delay fix applied in the individual
+    add_*_feature() functions, most columns in a given row do NOT represent
+    that same calendar month's own value — they represent the most recent
+    value that would have genuinely been available/published by the START
+    of that month:
+      - USDZAR_*, Brent_* : shifted by 1 month, since these are computed
+        from data through the END of the prior month (they can't be known
+        until that month has closed).
+      - GECON, INDPRO, GSCPI, GPR, Total_Production : shifted by 1 month,
+        since these external indices/datasets are released with a real
+        reporting delay after their reference month.
+      - BFP : NOT shifted — South Africa's Basic Fuel Price for a given
+        month is calculated and published in advance (per the brief, ~1
+        week before the first Wednesday of that month), so it genuinely
+        IS known ahead of time and is treated as contemporaneous.
+
+    This means: for any row at Date = t, most feature columns reflect
+    information from month t-1, not month t — this is deliberate, and is
+    what keeps the model's inputs realistic (no look-ahead) when later used
+    to forecast Total_Fuel_Price at some horizon beyond t. Downstream
+    add_*_lags() functions build FURTHER lags on top of this already-shifted
+    base — so a column named e.g. USDZAR_Mean_Lag1 reflects information from
+    roughly 2 months prior to Date, not 1 (the "Lag1" naming refers to the
+    additional shift applied by that function, not the total real-world age
+    of the data).
+
+    Returns
+    -------
+    DataFrame, one row per month, sorted ascending by Date.
+    """
     diesel_breakdown_df, master_diesel_df = import_breakdown("../data/50ppm.csv")
     USD_ZAR_df = import_USD_ZAR("../data/USDZAR.csv")
     brent_crude_df = import_brentcrude("../data/DCOILBRENTEU.csv")
@@ -687,17 +785,13 @@ def load_diesel():
     gecon_df = import_gecon("../data/GECON.csv")
     indpro_df = import_indpro("../data/INDPRO.csv")
     
-    
-    
     master_diesel_df = add_usd_features(master_diesel_df, USD_ZAR_df)
     master_diesel_df = add_brent_features(master_diesel_df, brent_crude_df)
     
     master_diesel_df = add_gpr_feature(master_diesel_df, GPR_df)
     master_diesel_df = add_gscpi_feature(master_diesel_df, GSCPI_df)
     master_diesel_df = add_gecon_feature(master_diesel_df, gecon_df)
-    master_diesel_df = add_indpro_feature(master_diesel_df, indpro_df)
-    
-        
+    master_diesel_df = add_indpro_feature(master_diesel_df, indpro_df)    
     
     master_diesel_df = add_gpr_lags(master_diesel_df)
     master_diesel_df = add_bfp_lags(master_diesel_df)
@@ -710,8 +804,22 @@ def load_diesel():
     master_diesel_df = add_indpro_lags(master_diesel_df)
     
     total_production = load_jodi_production()
-    total_production_reset = total_production.reset_index()  # columns: Date, Total_Production
+    total_production_reset = total_production.reset_index().sort_values("Date")
 
+    # JODI reference-month data isn't available until ~20 days into the FOLLOWING
+    # month at the earliest (per JODI's own publication schedule), and some
+    # countries report even later (M-2 basis) — shift by 1 to keep this
+    # conservative and consistent with the other macro series fixes.
+    total_production_reset["Total_Production"] = total_production_reset["Total_Production"].shift(1)
+
+    master_diesel_df = pd.merge(master_diesel_df, total_production_reset, on="Date", how="outer")
+
+    # NEW — extend delta coverage to Brent, macro indices, and JODI production
+    master_diesel_df = add_delta_features(
+        master_diesel_df,
+        cols=["Total_Production"],
+        lags=(1, 2, 3)
+    )
     # Merge explicitly on the Date column
     master_diesel_df = pd.merge(master_diesel_df, total_production_reset, on="Date", how="outer")
 
